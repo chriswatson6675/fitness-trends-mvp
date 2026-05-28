@@ -1,0 +1,128 @@
+name: Daily Fitness Trends Scraper
+
+# Run every day at 8 AM UTC
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  # Also allow manual trigger from GitHub UI
+  workflow_dispatch:
+
+jobs:
+  scrape-trends:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: ./backend
+        run: npm install
+
+      - name: Run daily scraper
+        working-directory: ./backend
+        env:
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          NODE_ENV: production
+          API_PORT: 3001
+        run: |
+          echo "🚀 Starting daily fitness trends scraper..."
+          node -e "
+            const path = require('path');
+            const dotenv = require('dotenv');
+            
+            // Create .env.local from secrets
+            const envContent = \`
+YOUTUBE_API_KEY=${{ secrets.YOUTUBE_API_KEY }}
+ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+NODE_ENV=production
+API_PORT=3001
+            \`.trim();
+            
+            require('fs').writeFileSync('.env.local', envContent);
+          "
+          
+          node -e "
+            const { getYouTubeTrends } = require('./lib/youtube');
+            const { analyzeTrend } = require('./lib/claude');
+            const { createClient } = require('@supabase/supabase-js');
+            
+            async function runDailyScraper() {
+              try {
+                console.log('📊 Fetching trends from YouTube...');
+                const trends = await getYouTubeTrends('GB');
+                
+                if (trends.length === 0) {
+                  console.log('⚠️  No trends found. Check API quota.');
+                  return;
+                }
+                
+                console.log(\`✅ Found \${trends.length} trends\`);
+                
+                // Initialize Supabase
+                const supabase = createClient(
+                  process.env.SUPABASE_URL,
+                  process.env.SUPABASE_ANON_KEY
+                );
+                
+                const today = new Date().toISOString().split('T')[0];
+                let savedCount = 0;
+                
+                // Save each trend
+                for (const trend of trends) {
+                  try {
+                    const analysis = await analyzeTrend(trend.name, trend.mentions_today);
+                    
+                    const { error } = await supabase
+                      .from('trend_snapshots')
+                      .insert({
+                        date: today,
+                        niche: 'fitness',
+                        platform: trend.platform,
+                        trend_name: trend.name,
+                        mentions: trend.mentions_today,
+                        velocity: trend.velocity,
+                        sentiment: analysis.sentiment,
+                        longevity_prediction: analysis.longevity_days,
+                      });
+                    
+                    if (error) {
+                      console.error(\`❌ Failed to save \${trend.name}: \${error.message}\`);
+                    } else {
+                      console.log(\`✅ Saved: \${trend.name}\`);
+                      savedCount++;
+                    }
+                  } catch (err) {
+                    console.error(\`❌ Error analyzing \${trend.name}: \${err.message}\`);
+                  }
+                }
+                
+                console.log(\`\n🎉 Daily scraper complete! Saved \${savedCount}/\${trends.length} trends\`);
+              } catch (error) {
+                console.error('❌ Daily scraper failed:', error.message);
+                process.exit(1);
+              }
+            }
+            
+            runDailyScraper();
+          "
+
+      - name: Notify on success
+        if: success()
+        run: echo "✅ Daily scraper ran successfully"
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Daily scraper failed"
+          exit 1
