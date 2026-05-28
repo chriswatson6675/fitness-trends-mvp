@@ -1,0 +1,286 @@
+const express = require('express');
+const cors = require('cors');
+const net = require('net');
+const path = require('path');
+const dotenv = require('dotenv');
+
+dotenv.config({ path: path.resolve(__dirname, '.env.local') });
+
+const { analyzetrend } = require('./lib/claude');
+const { searchTrendingFitness, fallbackVideos } = require('./lib/youtube');
+const { saveTrend } = require('./lib/database');
+
+const app = express();
+const PORT = process.env.API_PORT || 3001;
+
+app.use(cors());
+app.use(express.json());
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', uptime_seconds: process.uptime() });
+});
+
+const KEYWORDS = [
+  'pilates',
+  'calisthenics',
+  'hiit',
+  'yoga',
+  'crossfit',
+  'strength training',
+  'functional training',
+  'barre',
+  'mobility',
+  'bodyweight',
+  'kettlebell',
+  'spin',
+  'dance fitness',
+  'bootcamp',
+  'stretch',
+  'cardio',
+  'boxing',
+  'interval training',
+  'core training',
+  'stretching'
+];
+
+function escapeKeyword(keyword) {
+  return keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function countKeywordMentions(titles) {
+  const counts = {};
+  const escapedKeywords = KEYWORDS.map((keyword) => ({
+    keyword,
+    regex: new RegExp(`\\b${escapeKeyword(keyword)}\\b`, 'gi')
+  }));
+
+  titles.forEach((title) => {
+    const normalized = title || '';
+    escapedKeywords.forEach(({ keyword, regex }) => {
+      const matches = normalized.match(regex);
+      if (matches && matches.length > 0) {
+        counts[keyword] = (counts[keyword] || 0) + matches.length;
+      }
+    });
+  });
+
+  return counts;
+}
+
+function matchKeywords(title) {
+  const matched = [];
+  const normalized = title || '';
+  KEYWORDS.forEach((keyword) => {
+    const regex = new RegExp(`\\b${escapeKeyword(keyword)}\\b`, 'gi');
+    if (regex.test(normalized)) {
+      matched.push(keyword);
+    }
+  });
+  return matched;
+}
+
+function groupVideosByKeyword(videos) {
+  const groups = {};
+  videos.forEach((video) => {
+    const matched = matchKeywords(video.title);
+    matched.forEach((keyword) => {
+      groups[keyword] = groups[keyword] || [];
+      groups[keyword].push(video);
+    });
+  });
+  return groups;
+}
+
+function sortVideosByVelocity(videos) {
+  return [...videos].sort((a, b) => (b.velocity || 0) - (a.velocity || 0));
+}
+
+function buildTrendPayload(name, mentions, id, videos = []) {
+  const previousDay = 0;
+  const velocity = previousDay === 0 ? (mentions > 0 ? 100 : 0) : Math.round(((mentions - previousDay) / previousDay) * 100);
+
+  return {
+    id,
+    name,
+    platform: 'youtube',
+    mentions_today: mentions,
+    mentions_yesterday: 0,
+    velocity,
+    videos: sortVideosByVelocity(videos).slice(0, 5)
+  };
+}
+
+app.get('/api/trends', async (req, res) => {
+  const acceptedRegions = ['GB', 'US', 'AU', 'CA', 'IN', 'GLOBAL'];
+  const rawRegion = String(req.query.region || 'GB').toUpperCase();
+  const region = acceptedRegions.includes(rawRegion) ? rawRegion : 'GB';
+
+  let videos;
+  try {
+    const result = await searchTrendingFitness(region);
+    videos = Array.isArray(result?.videos) ? result.videos : [];
+    if (!Array.isArray(videos)) {
+      throw new Error('Invalid video response from YouTube');
+    }
+  } catch (error) {
+    console.warn(
+      `YouTube API fetch failed for region ${region}, using fallback video data:`,
+      error.message || error
+    );
+    videos = fallbackVideos;
+  }
+
+  const titles = videos.map((video) => video.title || '');
+  const mentionCounts = countKeywordMentions(titles);
+  const topKeywordEntries = Object.entries(mentionCounts)
+    .filter(([, count]) => count > 0)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10);
+
+  const defaultKeywords = [['fitness workout', 1], ['yoga', 1], ['hiit', 1], ['pilates', 1], ['bodyweight', 1]];
+  const topKeywords = topKeywordEntries.length ? topKeywordEntries : defaultKeywords;
+  const videosByKeyword = groupVideosByKeyword(videos);
+
+  const analyzedTrends = await Promise.all(
+    topKeywords.map(async ([keyword, count], index) => {
+      const trendVideos = videosByKeyword[keyword] || [];
+      const trend = buildTrendPayload(keyword, count, index + 1, trendVideos);
+      try {
+        const analysis = await analyzetrend(keyword, count);
+        return {
+          ...trend,
+          sentiment: analysis.sentiment,
+          longevity_days: analysis.longevity_days,
+          content_ideas: analysis.content_ideas
+        };
+      } catch (error) {
+        console.warn(`Unable to analyze keyword ${keyword}:`, error.message || error);
+        return {
+          ...trend,
+          sentiment: 'neutral',
+          longevity_days: 30,
+          content_ideas: []
+        };
+      }
+    })
+  );
+
+  res.json({ region, data: analyzedTrends });
+});
+
+app.post('/api/analyze', async (req, res) => {
+  const trendName = req.body.trendName || req.body.trend_name;
+  const mentions = req.body.mentions || req.body.mentions_today || 0;
+  if (!trendName) {
+    return res.status(400).json({ error: 'trendName is required' });
+  }
+
+  try {
+    const analysis = await analyzetrend(trendName, Number(mentions) || 0);
+
+    try {
+      await saveTrend({
+        trendName,
+        mentions: Number(mentions) || 0,
+        ...analysis
+      });
+    } catch (saveError) {
+      console.warn('Warning: supabase saveTrend failed:', saveError.message);
+    }
+
+    res.json({ trendName, mentions: Number(mentions) || 0, analysis });
+  } catch (error) {
+    console.error('Analyze endpoint error:', error);
+    res.status(500).json({ error: 'Unable to analyze trend' });
+  }
+});
+
+app.get('/api/youtube/trending', async (req, res) => {
+  const region = String(req.query.region || 'GB').toUpperCase();
+  try {
+    const result = await searchTrendingFitness(region);
+    const videos = Array.isArray(result?.videos) ? result.videos : [];
+    res.json({ videos, region });
+  } catch (error) {
+    console.warn('Unable to fetch trending videos:', error.message || error);
+    res.json({ videos: fallbackVideos, region });
+  }
+});
+
+const DEFAULT_PORT = Number(process.env.API_PORT) || 3001;
+const MAX_PORT = DEFAULT_PORT + 4;
+let server;
+
+function checkPortAvailable(port) {
+  return new Promise((resolve) => {
+    const tester = net.createServer()
+      .once('error', (err) => {
+        tester.close();
+        resolve(false);
+      })
+      .once('listening', () => {
+        tester.close(() => resolve(true));
+      })
+      .listen(port, '127.0.0.1');
+  });
+}
+
+async function findAvailablePort(startPort, endPort) {
+  for (let port = startPort; port <= endPort; port += 1) {
+    if (await checkPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`No available ports between ${startPort} and ${endPort}`);
+}
+
+function gracefulShutdown() {
+  console.log('Server shutting down...');
+  if (!server) {
+    process.exit(0);
+    return;
+  }
+
+  server.close(() => {
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    process.exit(0);
+  }, 5000).unref();
+}
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
+
+async function start() {
+  try {
+    const port = await findAvailablePort(DEFAULT_PORT, MAX_PORT);
+    server = app.listen(port, () => {
+      console.log(`Fitness Trends MVP backend running on http://localhost:${port}`);
+    });
+
+    server.on('error', async (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`Port ${err.port} is busy, trying next port...`);
+        try {
+          const nextPort = await findAvailablePort(err.port + 1, MAX_PORT);
+          server = app.listen(nextPort, () => {
+            console.log(`Fitness Trends MVP backend running on http://localhost:${nextPort}`);
+          });
+        } catch (nestedError) {
+          console.error('Unable to start server on any fallback port:', nestedError.message || nestedError);
+          process.exit(1);
+        }
+      } else {
+        console.error('Server error:', err);
+        process.exit(1);
+      }
+    });
+  } catch (error) {
+    console.error('Startup error:', error.message || error);
+    process.exit(1);
+  }
+}
+
+start();

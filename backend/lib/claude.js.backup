@@ -54,11 +54,12 @@ async function analyzetrend(trendName, mentions) {
   }
 
   const result = await response.json();
-  // Support both chat-style and legacy fields
+  // Support several response shapes from Claude / Anthropic
   let content = '';
   try {
-    if (result.choices && result.choices[0] && result.choices[0].message) {
-      content = result.choices[0].message.content || '';
+    if (result.choices && result.choices[0]) {
+      const choice = result.choices[0];
+      content = choice.message?.content || choice.content || choice.text || choice?.content?.[0]?.text || '';
     } else if (result.completion) {
       content = result.completion;
     } else if (result.output) {

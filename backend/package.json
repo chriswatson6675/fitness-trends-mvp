@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "fitness-trends-mvp",
   "version": "1.0.0",
   "description": "Real-time fitness trend analyzer for content creators",
@@ -8,11 +8,17 @@
     "dev": "node server.js",
     "start": "node server.js"
   },
-  "keywords": ["fitness", "trends", "content-creator"],
+  "keywords": [
+    "fitness",
+    "trends",
+    "content-creator"
+  ],
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "cors": "^2.8.5",
     "dotenv": "^16.0.3",
-    "express": "^4.18.4"
+    "express": "^4.18.4",
+    "googleapis": "^172.0.0"
   }
 }
