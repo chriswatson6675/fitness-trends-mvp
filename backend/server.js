@@ -23,6 +23,8 @@ let PORT = process.env.API_PORT || 3001;
   if (!process.env[k]) console.warn(`Warning: environment variable ${k} is not set`);
 });
 
+const logger = require('./lib/logger');
+
 // Configure CORS. Set CORS_ORIGIN in production to restrict origins.
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json());
@@ -50,12 +52,12 @@ async function saveTrendSnapshot(niche, trend, analysis) {
       });
 
     if (error) {
-      console.error(`Failed to save snapshot for ${trend.name}:`, error.message);
+      logger.error(`Failed to save snapshot for ${trend.name}: ${error?.message || error}`);
     } else {
-      console.log(`✅ Saved snapshot: ${trend.name} (${niche})`);
+      logger.info(`✅ Saved snapshot: ${trend.name} (${niche})`);
     }
   } catch (err) {
-    console.error('Error saving trend snapshot:', err.message);
+    logger.error('Error saving trend snapshot:', err.message);
   }
 }
 
@@ -82,10 +84,10 @@ app.get('/api/trends', async (req, res) => {
       trends.map(async (trend) => {
         try {
           const analysis = await analyzeTrend(trend.name, trend.mentions_today);
-          
+
           // Save to database
           await saveTrendSnapshot('fitness', trend, analysis);
-          
+
           return {
             ...trend,
             sentiment: analysis.sentiment || 'positive',
@@ -93,7 +95,7 @@ app.get('/api/trends', async (req, res) => {
             content_ideas: analysis.content_ideas || trend.content_ideas,
           };
         } catch (error) {
-          console.error(`Error analyzing trend "${trend.name}":`, error.message);
+          logger.error(`Error analyzing trend "${trend.name}": ${error?.message || error}`);
           // Return trend with default analysis if Claude fails
           return trend;
         }
@@ -104,7 +106,7 @@ app.get('/api/trends', async (req, res) => {
     // update cache
     trendsCache = { region, timestamp: Date.now(), data: enrichedTrends };
   } catch (error) {
-    console.error('Error fetching trends:', error);
+    logger.error('Error fetching trends:', error);
     res.status(500).json({ error: 'Failed to fetch trends', region });
   }
 });
@@ -128,14 +130,14 @@ app.post('/api/analyze', async (req, res) => {
       content_ideas: analysis.content_ideas,
     });
   } catch (error) {
-    console.error('Error analyzing trend:', error);
+    logger.error('Error analyzing trend:', error);
     res.status(500).json({ error: 'Failed to analyze trend' });
   }
 });
 
 // Graceful shutdown
 function shutdown() {
-  console.log('\nServer shutting down...');
+  logger.info('\nServer shutting down...');
   process.exit(0);
 }
 
@@ -153,13 +155,13 @@ function findAvailablePort(startPort) {
       server.close();
     });
     server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        console.log(`Port ${startPort} is busy, trying next port...`);
-        resolve(findAvailablePort(startPort + 1));
-      } else {
-        // Reject the promise for unexpected errors instead of throwing
-        resolve(Promise.reject(err));
-      }
+        if (err.code === 'EADDRINUSE') {
+          logger.info(`Port ${startPort} is busy, trying next port...`);
+          resolve(findAvailablePort(startPort + 1));
+        } else {
+          // Reject the promise for unexpected errors instead of throwing
+          resolve(Promise.reject(err));
+        }
     });
   });
 }
@@ -170,11 +172,11 @@ async function startServer() {
   PORT = availablePort;
 
   app.listen(PORT, () => {
-    console.log(`Fitness Trends MVP backend running on http://localhost:${PORT}`);
+    logger.info(`Fitness Trends MVP backend running on http://localhost:${PORT}`);
   });
 }
 
 startServer().catch((err) => {
-  console.error('Failed to start server:', err);
+  logger.error('Failed to start server:', err);
   process.exit(1);
 });

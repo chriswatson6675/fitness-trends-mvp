@@ -66,8 +66,9 @@ async function getYouTubeTrends(region = 'GB') {
             allVideos.push(...statsResponse.data.items);
           }
         }
-      } catch (err) {
-        console.error(`Error searching for "${query}":`, err.message);
+        } catch (err) {
+        const logger = require('./logger');
+        logger.error(`Error searching for "${query}": ${err?.message || err}`);
       }
     }
 
@@ -141,7 +142,8 @@ async function getYouTubeTrends(region = 'GB') {
 
     return trends;
   } catch (error) {
-    console.error('Error fetching YouTube trends:', error);
+    const logger = require('./logger');
+    logger.error('Error fetching YouTube trends:', error);
     return [];
   }
 }

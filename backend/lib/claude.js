@@ -84,7 +84,8 @@ async function analyzeTrend(trendName, mentions) {
         content_ideas: Array.isArray(parsed.content_ideas) ? parsed.content_ideas.slice(0, 3) : []
       };
     } catch (error) {
-      console.error(`Error analyzing trend "${trendName}" (attempt ${attempt + 1}):`, error.message);
+      const logger = require('./logger');
+      logger.error(`Error analyzing trend "${trendName}" (attempt ${attempt + 1}): ${error?.message || error}`);
       if (attempt < 2) {
         // Backoff before retry
         await new Promise((r) => setTimeout(r, (attempt + 1) * 1000));
