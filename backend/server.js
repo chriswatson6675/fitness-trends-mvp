@@ -3,8 +3,14 @@ const cors = require('cors');
 const net = require('net');
 const path = require('path');
 const dotenv = require('dotenv');
+const { createClient } = require('@supabase/supabase-js');
 
 dotenv.config({ path: path.resolve(__dirname, '.env.local') });
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
 
 const { getYouTubeTrends } = require('./lib/youtube');
 const { analyzetrend } = require('./lib/claude');
@@ -14,6 +20,33 @@ let PORT = process.env.API_PORT || 3001;
 
 app.use(cors());
 app.use(express.json());
+
+async function saveTrendSnapshot(niche, trend, analysis) {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    
+    const { error } = await supabase
+      .from('trend_snapshots')
+      .insert({
+        date: today,
+        niche: niche,
+        platform: trend.platform,
+        trend_name: trend.name,
+        mentions: trend.mentions_today,
+        velocity: trend.velocity,
+        sentiment: analysis.sentiment,
+        longevity_prediction: analysis.longevity_days,
+      });
+
+    if (error) {
+      console.error(`Failed to save snapshot for ${trend.name}:`, error.message);
+    } else {
+      console.log(`✅ Saved snapshot: ${trend.name} (${niche})`);
+    }
+  } catch (err) {
+    console.error('Error saving trend snapshot:', err.message);
+  }
+}
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', uptime_seconds: process.uptime() });
@@ -33,6 +66,10 @@ app.get('/api/trends', async (req, res) => {
       trends.map(async (trend) => {
         try {
           const analysis = await analyzeTrend(trend.name, trend.mentions_today);
+          
+          // Save to database
+          await saveTrendSnapshot('fitness', trend, analysis);
+          
           return {
             ...trend,
             sentiment: analysis.sentiment || 'positive',
