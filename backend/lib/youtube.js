@@ -29,16 +29,21 @@ async function getYouTubeTrends(region = 'GB') {
     // Search for each fitness keyword
     for (const query of fitnessSearches) {
       try {
-        const response = await youtube.search.list({
+        const searchParams = {
           part: 'snippet',
           q: query,
-          regionCode: region,
           type: 'video',
           order: 'viewCount',
           publishedAfter: publishedAfter.toISOString(),
           maxResults: 20,
           relevanceLanguage: 'en',
-        });
+        };
+
+        if (region !== 'GLOBAL') {
+          searchParams.regionCode = region;
+        }
+
+        const response = await youtube.search.list(searchParams);
 
         if (response.data.items) {
           // Get video statistics for each video

@@ -13,7 +13,7 @@ const supabase = createClient(
 );
 
 const { getYouTubeTrends } = require('./lib/youtube');
-const { analyzetrend } = require('./lib/claude');
+const { analyzeTrend } = require('./lib/claude');
 
 const app = express();
 let PORT = process.env.API_PORT || 3001;

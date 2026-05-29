@@ -18,7 +18,7 @@ function extractJson(text) {
   }
 }
 
-async function analyzetrend(trendName, mentions) {
+async function analyzeTrend(trendName, mentions) {
   if (!apiKey) {
     throw new Error('ANTHROPIC_API_KEY is not configured');
   }
@@ -85,4 +85,4 @@ async function analyzetrend(trendName, mentions) {
   }
 }
 
-module.exports = { analyzetrend };
+module.exports = { analyzeTrend };
