@@ -6,6 +6,10 @@ const youtube = google.youtube({
   auth: process.env.YOUTUBE_API_KEY,
 });
 
+if (!process.env.YOUTUBE_API_KEY) {
+  throw new Error('YOUTUBE_API_KEY environment variable is not set');
+}
+
 // Fitness-specific search queries
 const fitnessSearches = [
   'fitness workout',
@@ -47,14 +51,18 @@ async function getYouTubeTrends(region = 'GB') {
 
         if (response.data.items) {
           // Get video statistics for each video
-          const videoIds = response.data.items.map((item) => item.id.videoId);
-          
+          const videoIds = response.data.items
+            .map((item) => item?.id?.videoId)
+            .filter(Boolean);
+
+          if (videoIds.length === 0) continue;
+
           const statsResponse = await youtube.videos.list({
             part: 'statistics,snippet',
             id: videoIds.join(','),
           });
 
-          if (statsResponse.data.items) {
+          if (statsResponse?.data?.items) {
             allVideos.push(...statsResponse.data.items);
           }
         }
@@ -77,8 +85,16 @@ async function getYouTubeTrends(region = 'GB') {
     const keywordMap = {};
 
     videoList.forEach((video) => {
-      const title = video.snippet.title.toLowerCase();
-      const views = parseInt(video.statistics.viewCount) || 0;
+      const title = String(video.snippet?.title || '').toLowerCase();
+      const views = parseInt(String(video.statistics?.viewCount || '0'), 10) || 0;
+      const publishedAt = video.snippet?.publishedAt ? new Date(video.snippet.publishedAt) : null;
+
+      // Calculate velocity as views per hour since upload (min 1 hour)
+      let velocity = 0;
+      if (publishedAt) {
+        const hoursSince = Math.max(1, (Date.now() - publishedAt.getTime()) / 3600000);
+        velocity = Math.round(views / hoursSince);
+      }
 
       // Match against fitness keywords
       fitnessSearches.forEach((keyword) => {
@@ -93,11 +109,11 @@ async function getYouTubeTrends(region = 'GB') {
           }
 
           keywordMap[keyword].videos.push({
-            title: video.snippet.title,
+            title: String(video.snippet?.title || ''),
             url: `https://www.youtube.com/watch?v=${video.id}`,
             views,
-            uploadedAt: video.snippet.publishedAt,
-            velocity: views / 24, // Rough estimate: views per hour
+            uploadedAt: video.snippet?.publishedAt,
+            velocity,
           });
 
           keywordMap[keyword].totalViews += views;

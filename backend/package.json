@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Real-time fitness trend analyzer for content creators",
   "main": "server.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "test:keys": "node test-keys.js",
     "dev": "node server.js",

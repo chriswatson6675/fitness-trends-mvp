@@ -18,13 +18,24 @@ const { analyzeTrend } = require('./lib/claude');
 const app = express();
 let PORT = process.env.API_PORT || 3001;
 
-app.use(cors());
+// Environment warnings
+['YOUTUBE_API_KEY', 'ANTHROPIC_API_KEY', 'SUPABASE_URL', 'SUPABASE_ANON_KEY'].forEach((k) => {
+  if (!process.env[k]) console.warn(`Warning: environment variable ${k} is not set`);
+});
+
+// Configure CORS. Set CORS_ORIGIN in production to restrict origins.
+app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json());
+
+// Simple in-memory cache for /api/trends to reduce repeated external calls
+let trendsCache = { region: null, timestamp: 0, data: null };
 
 async function saveTrendSnapshot(niche, trend, analysis) {
   try {
     const today = new Date().toISOString().split('T')[0];
-    
+    // Defensive checks
+    if (!trend || !trend.name || !analysis) return;
+
     const { error } = await supabase
       .from('trend_snapshots')
       .insert({
@@ -58,6 +69,11 @@ app.get('/api/trends', async (req, res) => {
   const region = acceptedRegions.includes(rawRegion) ? rawRegion : 'GB';
 
   try {
+    // Return cached result if recent
+    if (trendsCache.region === region && Date.now() - trendsCache.timestamp < 60_000 && trendsCache.data) {
+      return res.json({ region, data: trendsCache.data });
+    }
+
     // Get trends from YouTube scraper
     const trends = await getYouTubeTrends(region);
 
@@ -85,6 +101,8 @@ app.get('/api/trends', async (req, res) => {
     );
 
     res.json({ region, data: enrichedTrends });
+    // update cache
+    trendsCache = { region, timestamp: Date.now(), data: enrichedTrends };
   } catch (error) {
     console.error('Error fetching trends:', error);
     res.status(500).json({ error: 'Failed to fetch trends', region });
@@ -99,7 +117,10 @@ app.post('/api/analyze', async (req, res) => {
   }
 
   try {
-    const analysis = await analyzeTrend(trend_name, mentions_today);
+    const mentionsNum = Number(mentions_today || 0);
+    if (Number.isNaN(mentionsNum)) return res.status(400).json({ error: 'mentions_today must be a number' });
+
+    const analysis = await analyzeTrend(trend_name, mentionsNum);
     res.json({
       trend: trend_name,
       longevity_days: analysis.longevity_days,
@@ -113,10 +134,13 @@ app.post('/api/analyze', async (req, res) => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+function shutdown() {
   console.log('\nServer shutting down...');
   process.exit(0);
-});
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
 
 // Function to find available port
 function findAvailablePort(startPort) {
@@ -133,7 +157,8 @@ function findAvailablePort(startPort) {
         console.log(`Port ${startPort} is busy, trying next port...`);
         resolve(findAvailablePort(startPort + 1));
       } else {
-        throw err;
+        // Reject the promise for unexpected errors instead of throwing
+        resolve(Promise.reject(err));
       }
     });
   });
